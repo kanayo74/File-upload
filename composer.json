@@ -1,0 +1,13 @@
+{
+  "require": {
+    "phpmailer/phpmailer": "^6.9.2",
+    "phpoffice/phpword": "^1.3",
+    "phpoffice/phpspreadsheet": "^1.20",
+    "setasign/fpdf": "^1.8",
+    "setasign/fpdi": "^2.6",
+    "ext-fileinfo": "*",
+    "ext-mbstring": "*",
+    "ext-zip": "*",
+    "convertapi/convertapi-php": "^3.0"
+  }
+}
