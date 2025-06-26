@@ -1,100 +1,135 @@
 <?php
-header('Content-Type: application/json');
+// api.php
+
 require_once 'config.php';
+require_once 'auth.php';
+require_once 'documents.php';
 
-// Handle file upload
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['file'])) {
-    $uploadDir = 'uploads/';
-    $fileName = basename($_FILES['file']['name']);
-    $filePath = $uploadDir . $fileName;
-    $fileType = strtolower(pathinfo($filePath, PATHINFO_EXTENSION));
+header('Content-Type: application/json');
+
+try {
+    $method = $_SERVER['REQUEST_METHOD'];
+    $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+    $path = str_replace('/nsia-dms/api.php', '', $path);
+    $path = trim($path, '/');
+    $segments = explode('/', $path);
     
-    // Check if file is a PDF
-    if ($fileType != "pdf") {
-        echo json_encode(['success' => false, 'message' => 'Only PDF files are allowed']);
-        exit;
+    $response = ['success' => false, 'message' => 'Invalid request'];
+    
+    // Public endpoints
+    if ($method === 'POST' && $segments[0] === 'login') {
+        $data = json_decode(file_get_contents('php://input'), true);
+        $response = Auth::login($data['email'] ?? '', $data['password'] ?? '');
+    }
+    elseif ($method === 'POST' && $segments[0] === 'register') {
+        $data = json_decode(file_get_contents('php://input'), true);
+        $response = Auth::register(
+            $data['firstName'] ?? '',
+            $data['lastName'] ?? '',
+            $data['email'] ?? '',
+            $data['password'] ?? ''
+        );
     }
     
-    // Check file size (10MB max)
-    if ($_FILES['file']['size'] > 10000000) {
-        echo json_encode(['success' => false, 'message' => 'File is too large (max 10MB)']);
-        exit;
-    }
-    
-    // Upload file
-    if (move_uploaded_file($_FILES['file']['tmp_name'], $filePath)) {
-        // Save to database
-        $stmt = $pdo->prepare("INSERT INTO documents (name, department, file_path, uploaded_by, file_size) 
-                              VALUES (?, ?, ?, ?, ?)");
-        $stmt->execute([
-            $_POST['name'],
-            $_POST['department'],
-            $filePath,
-            $_POST['user_id'],
-            $_FILES['file']['size']
-        ]);
+    // Protected endpoints
+    elseif (Auth::isLoggedIn()) {
+        $user = Auth::getUser();
         
-        echo json_encode(['success' => true, 'filePath' => $filePath]);
-    } else {
-        echo json_encode(['success' => false, 'message' => 'Error uploading file']);
+        // Departments
+        if ($method === 'GET' && $segments[0] === 'departments') {
+            $response = [
+                'success' => true,
+                'data' => DocumentManager::getAllDepartments()
+            ];
+        }
+        
+        // Documents by department
+        elseif ($method === 'GET' && $segments[0] === 'documents' && isset($segments[1])) {
+            $page = $_GET['page'] ?? 1;
+            $search = $_GET['search'] ?? '';
+            $result = DocumentManager::getDocumentsByDepartment($segments[1], $page, 10, $search);
+            $response = [
+                'success' => true,
+                'data' => $result['documents'],
+                'pagination' => [
+                    'page' => $page,
+                    'total' => $result['total'],
+                    'pages' => $result['pages']
+                ]
+            ];
+        }
+        
+        // Recent documents
+        elseif ($method === 'GET' && $segments[0] === 'recent-documents') {
+            $response = [
+                'success' => true,
+                'data' => DocumentManager::getRecentDocuments()
+            ];
+        }
+        
+        // Upload document
+        elseif ($method === 'POST' && $segments[0] === 'upload') {
+            if (!isset($_FILES['file'])) {
+                throw new Exception('No file uploaded');
+            }
+            
+            $documentId = DocumentManager::uploadDocument(
+                $_FILES['file'],
+                $_POST['departmentId'] ?? 0,
+                $user['id'],
+                $_POST['name'] ?? null,
+                $_POST['description'] ?? '',
+                isset($_POST['isConfidential']),
+                explode(',', $_POST['tags'] ?? '')
+            );
+            
+            $response = [
+                'success' => true,
+                'message' => 'Document uploaded successfully',
+                'documentId' => $documentId
+            ];
+        }
+        
+        // Merge documents
+        elseif ($method === 'POST' && $segments[0] === 'merge') {
+            $data = json_decode(file_get_contents('php://input'), true);
+            
+            $mergedId = DocumentManager::mergeDocuments(
+                $data['sourceDocId'] ?? 0,
+                $data['targetDocId'] ?? 0,
+                $data['departmentId'] ?? 0,
+                $user['id'],
+                $data['mergeName'] ?? 'Merged_Document.pdf',
+                $data['keepOriginals'] ?? true,
+                $data['notifyTeam'] ?? false
+            );
+            
+            $response = [
+                'success' => true,
+                'message' => 'Documents merged successfully',
+                'mergedId' => $mergedId
+            ];
+        }
+        
+        // Download document
+        elseif ($method === 'GET' && $segments[0] === 'download' && isset($segments[1])) {
+            DocumentManager::downloadDocument($segments[1]);
+            exit;
+        }
     }
-    exit;
-}
-
-// Handle document merge
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['merge'])) {
-    $sourcePath = $_POST['source_path'];
-    $targetPath = $_POST['target_path'];
-    $newName = $_POST['new_name'];
-    $department = $_POST['department'];
-    $userId = $_POST['user_id'];
     
-    // In a real application, you would use a PDF library to merge the files
-    // This is just a simulation
-    
-    $mergedPath = 'uploads/' . uniqid() . '_merged.pdf';
-    
-    // Simulate merge by copying one of the files
-    if (!copy($sourcePath, $mergedPath)) {
-        echo json_encode(['success' => false, 'message' => 'Error merging files']);
-        exit;
+    // Logout
+    elseif ($method === 'POST' && $segments[0] === 'logout') {
+        Auth::logout();
+        $response = ['success' => true, 'message' => 'Logged out successfully'];
     }
     
-    // Save to database
-    $stmt = $pdo->prepare("INSERT INTO documents (name, department, file_path, uploaded_by, is_merged) 
-                          VALUES (?, ?, ?, ?, 1)");
-    $stmt->execute([
-        $newName,
-        $department,
-        $mergedPath,
-        $userId
+    echo json_encode($response);
+    
+} catch (Exception $e) {
+    http_response_code(500);
+    echo json_encode([
+        'success' => false,
+        'message' => $e->getMessage()
     ]);
-    
-    echo json_encode(['success' => true, 'filePath' => $mergedPath]);
-    exit;
 }
-
-// Get documents by department
-if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['department'])) {
-    $stmt = $pdo->prepare("SELECT * FROM documents WHERE department = ? ORDER BY uploaded_at DESC");
-    $stmt->execute([$_GET['department']]);
-    $documents = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    
-    echo json_encode($documents);
-    exit;
-}
-
-// Get recent documents
-if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['recent'])) {
-    $stmt = $pdo->prepare("SELECT d.*, u.name as uploaded_by_name 
-                          FROM documents d
-                          JOIN users u ON d.uploaded_by = u.id
-                          ORDER BY d.uploaded_at DESC 
-                          LIMIT 10");
-    $stmt->execute();
-    $documents = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    
-    echo json_encode($documents);
-    exit;
-}
-?>
